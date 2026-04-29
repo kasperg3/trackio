@@ -14,6 +14,7 @@
   let selectedValue = $derived(selectedPoint?.value ?? null);
   let selectedFilePath = $derived(selectedValue?.file_path ?? null);
   let selectedCaption = $derived(selectedValue?.caption ?? null);
+  let selectedBoxes = $derived(selectedValue?.boxes ?? null);
 
   async function resolveUrl(filePath) {
     if (!filePath) return "";
@@ -86,6 +87,49 @@
     if (step === null || step === undefined) return "";
     return String(step);
   }
+
+  function listBoxLayers(boxes) {
+    if (!boxes || typeof boxes !== "object" || Array.isArray(boxes)) return [];
+    const keys = Object.keys(boxes);
+    keys.sort();
+    return keys;
+  }
+
+  function normalizeColor(c) {
+    if (!c) return "#22c55e";
+    if (typeof c !== "string") return "#22c55e";
+    if (c.startsWith("#") || c.startsWith("rgb")) return c;
+    return c;
+  }
+
+  function parseBox(b) {
+    if (!b || typeof b !== "object") return null;
+    const position = b.position;
+    if (!position || typeof position !== "object") return null;
+    const { minX, minY, maxX, maxY } = position;
+    const x0 = Number(minX);
+    const y0 = Number(minY);
+    const x1 = Number(maxX);
+    const y1 = Number(maxY);
+    if ([x0, y0, x1, y1].some((v) => Number.isNaN(v))) return null;
+    return {
+      x: x0,
+      y: y0,
+      w: Math.max(0, x1 - x0),
+      h: Math.max(0, y1 - y0),
+      label: typeof b.class_id === "number" || typeof b.class_id === "string" ? String(b.class_id) : "",
+      color: normalizeColor(b.box_caption || b.color),
+    };
+  }
+
+  let overlayBoxes = $derived.by(() => {
+    const layers = listBoxLayers(selectedBoxes);
+    if (layers.length === 0) return [];
+    const first = selectedBoxes[layers[0]];
+    const data = first?.box_data;
+    if (!Array.isArray(data)) return [];
+    return data.map(parseBox).filter(Boolean);
+  });
 </script>
 
 <div class="image-step-viewer">
@@ -106,13 +150,33 @@
     </div>
     <div class="viewer-image-wrap" style:max-height={`${maxHeight}px`}>
       {#if selectedUrl}
-        <img
-          src={selectedUrl}
-          alt={selectedCaption || metricName}
-          style:max-width={maxWidth}
-          style:max-height={`${maxHeight}px`}
-          loading="lazy"
-        />
+        <div class="viewer-stage">
+          <img
+            src={selectedUrl}
+            alt={selectedCaption || metricName}
+            style:max-width={maxWidth}
+            style:max-height={`${maxHeight}px`}
+            loading="lazy"
+          />
+          {#if overlayBoxes.length > 0}
+            <div class="bbox-overlay">
+              {#each overlayBoxes as b}
+                <div
+                  class="bbox"
+                  style:left={`${b.x * 100}%`}
+                  style:top={`${b.y * 100}%`}
+                  style:width={`${b.w * 100}%`}
+                  style:height={`${b.h * 100}%`}
+                  style:border-color={b.color}
+                >
+                  {#if b.label}
+                    <div class="bbox-label" style:background={b.color}>{b.label}</div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
       {:else}
         <div class="viewer-placeholder">Loading image…</div>
       {/if}
@@ -192,6 +256,32 @@
     object-fit: contain;
     border-radius: 6px;
   }
+  .viewer-stage {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .bbox-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .bbox {
+    position: absolute;
+    border: 2px solid #22c55e;
+    box-sizing: border-box;
+  }
+  .bbox-label {
+    position: absolute;
+    top: -20px;
+    left: 0;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: white;
+    font-size: 11px;
+    line-height: 1.2;
+  }
   .viewer-caption {
     font-size: 12px;
     color: #334155;
@@ -218,4 +308,3 @@
     color: rgba(226, 232, 240, 0.75);
   }
 </style>
-

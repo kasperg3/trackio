@@ -596,6 +596,8 @@ def init(
     resolved_run_id = None
 
     if fork_run_id is not None:
+        # A fork always creates a fresh run; the source history is copied in after
+        # the Run object is constructed, so resume logic does not apply.
         resumed = False
     elif resume == "must":
         if name is None:

@@ -3339,11 +3339,9 @@ class SQLiteStorage:
                 run_identity = SQLiteStorage._resolve_run_identity(
                     conn, run_id=source_run_id, table="metrics"
                 )
-                if run_identity is None:
-                    raise ValueError(
-                        f"Run with id '{source_run_id}' does not exist in project '{project}'"
-                    )
-                run_col, run_val = run_identity
+                run_col, run_val = (
+                    run_identity if run_identity else ("run_id", source_run_id)
+                )
 
                 cursor.execute(
                     f"SELECT COUNT(*) FROM metrics WHERE {run_col} = ?",
@@ -3374,7 +3372,7 @@ class SQLiteStorage:
                 if not metrics_rows:
                     return None
 
-                actual_max_step: int = max(row["step"] for row in metrics_rows)
+                fork_point: int = max(row["step"] for row in metrics_rows)
 
                 if supports_run_ids:
                     cursor.executemany(
@@ -3505,7 +3503,7 @@ class SQLiteStorage:
                         pass
 
                 conn.commit()
-                return actual_max_step
+                return fork_point
 
     @staticmethod
     def get_all_logs_for_sync(project: str) -> list[dict]:

@@ -61,9 +61,9 @@
     return groupMetricsByPrefix(filtered, plotOrder);
   });
 
-  let imageMetrics = $derived(
-    metrics.filter((m) => m && typeof m === "string" && m.toLowerCase().endsWith("/image")),
-  );
+  // In W&B, logging images doesn't require any key naming convention.
+  // We detect image metrics by scanning the cached "original" log rows.
+  let imageMetrics = $state([]);
 
   let groupNames = $derived(Object.keys(metricGroups));
 
@@ -167,6 +167,17 @@
       }
     }
     singlePointMetrics = sp;
+
+    const imageMetricSet = new Set();
+    for (const r of originals) {
+      for (const col of cols) {
+        const v = r[col];
+        if (v && typeof v === "object" && !Array.isArray(v) && v._type === "trackio.image") {
+          imageMetricSet.add(col);
+        }
+      }
+    }
+    imageMetrics = Array.from(imageMetricSet).sort();
   }
 
   async function fetchLogsForRuns(runs) {

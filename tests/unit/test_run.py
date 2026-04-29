@@ -298,6 +298,125 @@ def test_init_survives_storage_read_failures(temp_dir, monkeypatch):
     run.finish()
 
 
+def test_fork_run_inherits_history(temp_dir):
+    original = init(project="fork-project", name="original-run")
+    for i in range(5):
+        original.log({"loss": 1.0 - i * 0.1})
+    original.finish()
+
+    forked = init(
+        project="fork-project",
+        name="forked-run",
+        fork_run_id=original.id,
+    )
+    assert forked.name == "forked-run"
+    assert forked._next_step == 5
+
+    forked_logs = SQLiteStorage.get_logs("fork-project", "forked-run", run_id=forked.id)
+    assert len(forked_logs) == 5
+    assert forked_logs[0]["step"] == 0
+    assert forked_logs[4]["step"] == 4
+
+    forked.log({"loss": 0.5})
+    forked.finish()
+
+    forked_logs = SQLiteStorage.get_logs("fork-project", "forked-run", run_id=forked.id)
+    assert len(forked_logs) == 6
+    assert forked_logs[5]["step"] == 5
+
+    original_logs = SQLiteStorage.get_logs(
+        "fork-project", "original-run", run_id=original.id
+    )
+    assert len(original_logs) == 5
+
+
+def test_fork_run_with_step_inherits_partial_history(temp_dir):
+    original = init(project="fork-project2", name="original-run")
+    for i in range(10):
+        original.log({"loss": 1.0 - i * 0.05})
+    original.finish()
+
+    forked = init(
+        project="fork-project2",
+        name="forked-run",
+        fork_run_id=original.id,
+        fork_step=4,
+    )
+    assert forked._next_step == 5
+
+    forked_logs = SQLiteStorage.get_logs(
+        "fork-project2", "forked-run", run_id=forked.id
+    )
+    assert len(forked_logs) == 5
+    assert forked_logs[0]["step"] == 0
+    assert forked_logs[4]["step"] == 4
+
+    forked.finish()
+
+
+def test_multiple_forks_each_inherit_original(temp_dir):
+    original = init(project="fork-project3", name="original-run")
+    for i in range(5):
+        original.log({"loss": 1.0 - i * 0.1})
+    original.finish()
+
+    forked1 = init(
+        project="fork-project3",
+        name="fork-1",
+        fork_run_id=original.id,
+    )
+    forked1.finish()
+
+    forked2 = init(
+        project="fork-project3",
+        name="fork-2",
+        fork_run_id=original.id,
+    )
+    forked2.finish()
+
+    for fork_id, fork_name in [(forked1.id, "fork-1"), (forked2.id, "fork-2")]:
+        logs = SQLiteStorage.get_logs("fork-project3", fork_name, run_id=fork_id)
+        assert len(logs) == 5, f"{fork_name} should inherit 5 steps"
+
+    original_logs = SQLiteStorage.get_logs(
+        "fork-project3", "original-run", run_id=original.id
+    )
+    assert len(original_logs) == 5
+
+
+def test_fork_run_sets_forked_from_config(temp_dir):
+    original = init(project="fork-config-project", name="original-run")
+    original.log({"loss": 0.5})
+    original.finish()
+
+    forked = init(
+        project="fork-config-project",
+        name="forked-run",
+        fork_run_id=original.id,
+    )
+    assert forked.config.get("_ForkedFrom") == original.id
+    forked.log({"loss": 0.3})
+    forked.finish()
+
+    config = SQLiteStorage.get_run_config(
+        "fork-config-project", "forked-run", run_id=forked.id
+    )
+    assert config is not None
+    assert config.get("_ForkedFrom") == original.id
+
+
+def test_sqlite_storage_fork_run_raises_for_missing_source(temp_dir):
+    SQLiteStorage.init_db("fork-storage-project")
+
+    with pytest.raises(ValueError, match="does not exist"):
+        SQLiteStorage.fork_run(
+            project="fork-storage-project",
+            source_run_id="nonexistent-id",
+            new_run_name="new-run",
+            new_run_id="new-run-id",
+        )
+
+
 def test_local_flush_failure_does_not_crash(temp_dir, monkeypatch):
     run = Run(url=None, project="proj", client=None, name="safe-run", space_id=None)
 

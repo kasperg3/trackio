@@ -3313,6 +3313,201 @@ class SQLiteStorage:
                 conn.commit()
 
     @staticmethod
+    def fork_run(
+        project: str,
+        source_run_id: str,
+        new_run_name: str,
+        new_run_id: str,
+        fork_step: int | None = None,
+    ) -> int | None:
+        """Copy metrics (and config/system_metrics) from a source run into a new run.
+
+        Copies all rows up to and including ``fork_step``.  When ``fork_step``
+        is ``None`` every row is copied.  Returns the maximum step that was
+        copied (which becomes the fork point), or ``None`` when no metrics were
+        found for the source run.
+
+        Raises:
+            ValueError: If the source run does not exist in the project.
+        """
+        db_path = SQLiteStorage.init_db(project)
+        with SQLiteStorage._get_process_lock(project):
+            with SQLiteStorage._get_connection(db_path) as conn:
+                cursor = conn.cursor()
+                supports_run_ids = SQLiteStorage._supports_run_ids(conn)
+
+                run_identity = SQLiteStorage._resolve_run_identity(
+                    conn, run_id=source_run_id, table="metrics"
+                )
+                if run_identity is None:
+                    raise ValueError(
+                        f"Run with id '{source_run_id}' does not exist in project '{project}'"
+                    )
+                run_col, run_val = run_identity
+
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM metrics WHERE {run_col} = ?",
+                    (run_val,),
+                )
+                if cursor.fetchone()[0] == 0:
+                    raise ValueError(
+                        f"Run with id '{source_run_id}' does not exist in project '{project}'"
+                    )
+
+                step_filter = "" if fork_step is None else " AND step <= ?"
+                step_params: list = [] if fork_step is None else [fork_step]
+
+                if supports_run_ids:
+                    cursor.execute(
+                        f"SELECT timestamp, run_name, step, metrics FROM metrics"
+                        f" WHERE {run_col} = ?{step_filter} ORDER BY step",
+                        [run_val] + step_params,
+                    )
+                else:
+                    cursor.execute(
+                        f"SELECT timestamp, step, metrics FROM metrics"
+                        f" WHERE {run_col} = ?{step_filter} ORDER BY step",
+                        [run_val] + step_params,
+                    )
+                metrics_rows = cursor.fetchall()
+
+                if not metrics_rows:
+                    return None
+
+                actual_max_step: int = max(row["step"] for row in metrics_rows)
+
+                if supports_run_ids:
+                    cursor.executemany(
+                        "INSERT INTO metrics (timestamp, run_id, run_name, step, metrics)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        [
+                            (
+                                row["timestamp"],
+                                new_run_id,
+                                new_run_name,
+                                row["step"],
+                                row["metrics"],
+                            )
+                            for row in metrics_rows
+                        ],
+                    )
+                else:
+                    cursor.executemany(
+                        "INSERT INTO metrics (timestamp, run_name, step, metrics)"
+                        " VALUES (?, ?, ?, ?)",
+                        [
+                            (
+                                row["timestamp"],
+                                new_run_name,
+                                row["step"],
+                                row["metrics"],
+                            )
+                            for row in metrics_rows
+                        ],
+                    )
+
+                config_identity = SQLiteStorage._resolve_run_identity(
+                    conn, run_id=source_run_id, table="configs"
+                )
+                if config_identity is not None:
+                    config_col, config_val = config_identity
+                    cursor.execute(
+                        f"SELECT config, created_at FROM configs WHERE {config_col} = ?",
+                        (config_val,),
+                    )
+                    config_row = cursor.fetchone()
+                    if config_row:
+                        if supports_run_ids:
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO configs"
+                                " (run_id, run_name, config, created_at)"
+                                " VALUES (?, ?, ?, ?)",
+                                (
+                                    new_run_id,
+                                    new_run_name,
+                                    config_row["config"],
+                                    datetime.now(timezone.utc).isoformat(),
+                                ),
+                            )
+                        else:
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO configs"
+                                " (run_name, config, created_at)"
+                                " VALUES (?, ?, ?)",
+                                (
+                                    new_run_name,
+                                    config_row["config"],
+                                    datetime.now(timezone.utc).isoformat(),
+                                ),
+                            )
+
+                system_identity = SQLiteStorage._resolve_run_identity(
+                    conn, run_id=source_run_id, table="system_metrics"
+                )
+                if system_identity is not None:
+                    system_col, system_val = system_identity
+                    try:
+                        if fork_step is None:
+                            cursor.execute(
+                                f"SELECT timestamp, metrics FROM system_metrics"
+                                f" WHERE {system_col} = ? ORDER BY timestamp",
+                                (system_val,),
+                            )
+                        else:
+                            cursor.execute(
+                                f"SELECT sm.timestamp, sm.metrics"
+                                f" FROM system_metrics sm"
+                                f" JOIN metrics m ON m.{run_col} = ?"
+                                f" WHERE sm.{system_col} = ?"
+                                f"   AND sm.timestamp <= ("
+                                f"     SELECT MAX(timestamp) FROM metrics"
+                                f"     WHERE {run_col} = ? AND step <= ?"
+                                f"   )"
+                                f" GROUP BY sm.timestamp, sm.metrics"
+                                f" ORDER BY sm.timestamp",
+                                (run_val, system_val, run_val, fork_step),
+                            )
+                        system_rows = cursor.fetchall()
+                        if system_rows:
+                            system_cols = SQLiteStorage._table_columns(
+                                conn, "system_metrics"
+                            )
+                            if "run_id" in system_cols:
+                                cursor.executemany(
+                                    "INSERT INTO system_metrics"
+                                    " (timestamp, run_id, run_name, metrics)"
+                                    " VALUES (?, ?, ?, ?)",
+                                    [
+                                        (
+                                            row["timestamp"],
+                                            new_run_id,
+                                            new_run_name,
+                                            row["metrics"],
+                                        )
+                                        for row in system_rows
+                                    ],
+                                )
+                            else:
+                                cursor.executemany(
+                                    "INSERT INTO system_metrics"
+                                    " (timestamp, run_name, metrics)"
+                                    " VALUES (?, ?, ?)",
+                                    [
+                                        (
+                                            row["timestamp"],
+                                            new_run_name,
+                                            row["metrics"],
+                                        )
+                                        for row in system_rows
+                                    ],
+                                )
+                    except sqlite3.OperationalError:
+                        pass
+
+                conn.commit()
+                return actual_max_step
+
+    @staticmethod
     def get_all_logs_for_sync(project: str) -> list[dict]:
         return SQLiteStorage._get_all_for_sync(
             project,

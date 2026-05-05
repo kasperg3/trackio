@@ -27,6 +27,7 @@ class TrackioMedia(ABC):
         """
         self.caption = caption
         self._value = value
+        self._metadata: dict | None = None
         self._file_path: Path | None = None
 
         if isinstance(self._value, str | Path):
@@ -72,8 +73,11 @@ class TrackioMedia(ABC):
     def _to_dict(self) -> dict:
         if not self._file_path:
             raise ValueError("Media must be saved to file before serialization")
-        return {
+        out = {
             "_type": self.TYPE,
             "file_path": str(self._get_relative_file_path()),
             "caption": self.caption,
         }
+        if self._metadata:
+            out.update(self._metadata)
+        return out

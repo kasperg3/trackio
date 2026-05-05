@@ -45,9 +45,21 @@ class TrackioImage(TrackioMedia):
 
     TYPE = "trackio.image"
 
-    def __init__(self, value: TrackioImageSourceType, caption: str | None = None):
+    def __init__(
+        self,
+        value: TrackioImageSourceType,
+        caption: str | None = None,
+        boxes: dict | None = None,
+    ):
         super().__init__(value, caption)
         self._format: str | None = None
+        if boxes is not None:
+            if not isinstance(boxes, dict):
+                raise ValueError(
+                    f"Invalid boxes type, expected dict, got {type(boxes)}"
+                )
+            # W&B-compatible: allow `wandb.Image(..., boxes={"predictions": {...}})`.
+            self._metadata = {"boxes": boxes}
 
         if not isinstance(self._value, TrackioImageSourceType):
             raise ValueError(

@@ -5,6 +5,7 @@
   import BarPlot from "../components/BarPlot.svelte";
   import Accordion from "../components/Accordion.svelte";
   import LoadingTrackio from "../components/LoadingTrackio.svelte";
+  import ImageStepViewer from "../components/ImageStepViewer.svelte";
   import { getLogsBatch } from "../lib/api.js";
   import {
     getMetricsPollIntervalMs,
@@ -59,6 +60,10 @@
       : metrics;
     return groupMetricsByPrefix(filtered, plotOrder);
   });
+
+  // In W&B, logging images doesn't require any key naming convention.
+  // We detect image metrics by scanning the cached "original" log rows.
+  let imageMetrics = $state([]);
 
   let groupNames = $derived(Object.keys(metricGroups));
 
@@ -162,6 +167,17 @@
       }
     }
     singlePointMetrics = sp;
+
+    const imageMetricSet = new Set();
+    for (const r of originals) {
+      for (const col of cols) {
+        const v = r[col];
+        if (v && typeof v === "object" && !Array.isArray(v) && v._type === "trackio.image") {
+          imageMetricSet.add(col);
+        }
+      }
+    }
+    imageMetrics = Array.from(imageMetricSet).sort();
   }
 
   async function fetchLogsForRuns(runs) {
@@ -311,6 +327,20 @@
       <pre><code>{'trackio.finish()'}</code></pre>
     </div>
   {:else}
+    {#if imageMetrics.length > 0}
+      <Accordion label="Images ({imageMetrics.length})" open={true} hidden={!showHeaders}>
+        <div class="image-metric-grid">
+          {#each imageMetrics as metric}
+            <ImageStepViewer
+              {project}
+              run={selectedRuns[0]}
+              metricName={metric}
+            />
+          {/each}
+        </div>
+      </Accordion>
+    {/if}
+
     {#each groupNames as groupName}
       {@const group = metricGroups[groupName]}
       {@const directKey = `${groupName}:direct`}
@@ -440,6 +470,11 @@
   .plot-grid {
     display: flex;
     flex-wrap: wrap;
+    gap: 16px;
+  }
+  .image-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 16px;
   }
   .subgroup-list {

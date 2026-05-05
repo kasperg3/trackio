@@ -299,6 +299,8 @@ def init(
     gpu_log_interval: float = 10.0,
     webhook_url: str | None = None,
     webhook_min_level: AlertLevel | str | None = None,
+    fork_run_id: str | None = None,
+    fork_step: int | None = None,
 ) -> Run:
     """
     Creates a new Trackio project and returns a [`Run`] object.
@@ -385,6 +387,18 @@ def init(
             For example, `AlertLevel.WARN` sends only `WARN` and `ERROR`
             alerts to the webhook destination. Can also be set via
             `TRACKIO_WEBHOOK_MIN_LEVEL`.
+        fork_run_id (`str`, *optional*):
+            The ``run.id`` of an existing run to fork from.  All metrics
+            logged up to ``fork_step`` are copied into the new run so that
+            the forked run inherits the full history of the source run up
+            to that point.  Multiple forks of the same run all see the same
+            inherited curves.  When ``fork_run_id`` is provided, ``resume``
+            is ignored.
+        fork_step (`int`, *optional*):
+            The step at which to fork the source run.  Only metrics up to
+            and including this step are copied.  When omitted, all existing
+            metrics of the source run are inherited by the fork.  Only used
+            when ``fork_run_id`` is provided.
     Returns:
         `Run`: A [`Run`] object that can be used to log metrics and finish the run.
     """
@@ -581,7 +595,11 @@ def init(
     )
     resolved_run_id = None
 
-    if resume == "must":
+    if fork_run_id is not None:
+        # A fork always creates a fresh run; the source history is copied in after
+        # the Run object is constructed, so resume logic does not apply.
+        resumed = False
+    elif resume == "must":
         if name is None:
             raise ValueError("Must provide a run name when resume='must'")
         if existing_run is None:
@@ -608,7 +626,7 @@ def init(
             run_id=resolved_run_id,
             remote_client=remote_client,
         )
-        if name is not None
+        if name is not None and fork_run_id is None
         else None
     )
 
@@ -645,6 +663,23 @@ def init(
         webhook_min_level=webhook_min_level,
     )
 
+    if fork_run_id is not None and space_id is None and server_base_url is None:
+        try:
+            forked_step = SQLiteStorage.fork_run(
+                project,
+                source_run_id=fork_run_id,
+                new_run_name=run.name,
+                new_run_id=run.id,
+                fork_step=fork_step,
+            )
+            if forked_step is not None:
+                run._next_step = forked_step + 1
+            run.config["_ForkedFrom"] = fork_run_id
+        except Exception as e:
+            _emit_nonfatal_warning(
+                f"trackio.init() could not fork run '{fork_run_id}': {e}. Starting fresh run without inherited history."
+            )
+
     if space_id is not None:
         try:
             SQLiteStorage.set_project_metadata(project, "space_id", space_id)
@@ -665,7 +700,9 @@ def init(
         atexit.register(_cleanup_current_run)
         _atexit_registered = True
 
-    if resumed:
+    if fork_run_id is not None:
+        print(f"* Forked run '{fork_run_id}' into new run: {run.name}")
+    elif resumed:
         print(f"* Resumed existing run: {run.name}")
     else:
         print(f"* Created new run: {run.name}")
